@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       skia_version:
-        description: 'Skia version (e.g., m144b)'
+        description: 'Skia version (e.g., m144c)'
         required: true
         type: string
       npm_version:
-        description: 'NPM package version (e.g., 144.2.0)'
-        required: true
+        description: 'NPM version (optional, derived from skia_version: m144c → 144.3.0)'
+        required: false
         type: string
       graphite:
         description: 'Publish Graphite packages'
@@ -21,6 +21,16 @@ on:
         default: true
 
 jobs:
+  check-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check branch
+        run: |
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "::warning::Publishing is only allowed from the main branch. Current branch: ${{ github.ref }}"
+            echo "The workflow will generate and verify packages but skip publishing."
+          fi
+
   generate-matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -40,7 +50,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # for npm provenance
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
@@ -57,22 +66,26 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Generate package
+      - name: Generate package (download and bundle binaries)
         run: |
           GRAPHITE_FLAG=""
+          NPM_VERSION_FLAG=""
           if [ "${{ inputs.graphite }}" = "true" ]; then
             GRAPHITE_FLAG="--graphite"
+          fi
+          if [ -n "${{ inputs.npm_version }}" ]; then
+            NPM_VERSION_FLAG="--npm-version=${{ inputs.npm_version }}"
           fi
           npx tsx src/generate-packages.ts \
             --package=${{ matrix.package }} \
             --skia-version=${{ inputs.skia_version }} \
-            --npm-version=${{ inputs.npm_version }} \
+            $NPM_VERSION_FLAG \
             $GRAPHITE_FLAG
 
       - name: Verify package structure
         run: |
-          SUBDIR="${{ inputs.graphite == 'true' && 'graphite' || 'ganesh' }}"
-          PKG_DIR="dist/$SUBDIR/${{ matrix.package }}"
+          PREFIX="${{ inputs.graphite == 'true' && 'skia-graphite' || 'skia' }}"
+          PKG_DIR="dist/react-native-$PREFIX-${{ matrix.package }}"
 
           echo "Package directory contents:"
           ls -la "$PKG_DIR/"
@@ -81,54 +94,52 @@ jobs:
           echo "package.json:"
           cat "$PKG_DIR/package.json"
 
+          echo ""
+          echo "libs/ contents:"
+          find "$PKG_DIR/libs" -type f | head -20
+
           # Verify required files exist
           if [ ! -f "$PKG_DIR/package.json" ]; then
             echo "ERROR: package.json not found"
             exit 1
           fi
 
-          if [ ! -f "$PKG_DIR/postinstall.mjs" ]; then
-            echo "ERROR: postinstall.mjs not found"
+          # Verify libs directory has content
+          if [ -z "$(ls -A $PKG_DIR/libs)" ]; then
+            echo "ERROR: libs/ directory is empty"
             exit 1
           fi
 
-      - name: Test postinstall script (download binaries)
-        run: |
-          SUBDIR="${{ inputs.graphite == 'true' && 'graphite' || 'ganesh' }}"
-          PKG_DIR="dist/$SUBDIR/${{ matrix.package }}"
-
-          echo "Testing postinstall script..."
-          cd "$PKG_DIR"
-          node postinstall.mjs
-
-          echo ""
-          echo "Downloaded files:"
-          find libs -type f | head -20 || echo "No files found"
-
       - name: Publish to npm (dry run)
-        if: ${{ inputs.dry_run == true }}
+        if: ${{ github.ref == 'refs/heads/main' && inputs.dry_run == true }}
         run: |
-          SUBDIR="${{ inputs.graphite == 'true' && 'graphite' || 'ganesh' }}"
-          cd "dist/$SUBDIR/${{ matrix.package }}"
-          npm publish --provenance --access public --dry-run
+          PREFIX="${{ inputs.graphite == 'true' && 'skia-graphite' || 'skia' }}"
+          cd "dist/react-native-$PREFIX-${{ matrix.package }}"
+          npm publish --access public --dry-run
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish to npm
-        if: ${{ inputs.dry_run == false }}
+        if: ${{ github.ref == 'refs/heads/main' && inputs.dry_run == false }}
         run: |
-          SUBDIR="${{ inputs.graphite == 'true' && 'graphite' || 'ganesh' }}"
-          cd "dist/$SUBDIR/${{ matrix.package }}"
-          npm publish --provenance --access public
+          PREFIX="${{ inputs.graphite == 'true' && 'skia-graphite' || 'skia' }}"
+          cd "dist/react-native-$PREFIX-${{ matrix.package }}"
+          npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Skip publish (not on main)
+        if: ${{ github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::warning::Skipping publish - workflow must be run from main branch"
+          echo "Current ref: ${{ github.ref }}"
 
       - name: Upload package as artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.graphite == true && 'skia-graphite' || 'skia' }}-${{ matrix.package }}
-          path: dist/${{ inputs.graphite == true && 'graphite' || 'ganesh' }}/${{ matrix.package }}/
+          name: react-native-${{ inputs.graphite == true && 'skia-graphite' || 'skia' }}-${{ matrix.package }}
+          path: dist/react-native-${{ inputs.graphite == true && 'skia-graphite' || 'skia' }}-${{ matrix.package }}/
           retention-days: 7
 
   summary:
@@ -148,7 +159,9 @@ jobs:
           echo "| Dry Run | ${{ inputs.dry_run }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "> **Warning**: Publishing skipped - workflow must be run from the main branch." >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ inputs.dry_run }}" = "true" ]; then
             echo "> **Note**: This was a dry run. No packages were published to npm." >> $GITHUB_STEP_SUMMARY
           else
             echo "Packages published successfully to npm!" >> $GITHUB_STEP_SUMMARY
