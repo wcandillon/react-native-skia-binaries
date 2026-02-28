@@ -3,18 +3,6 @@ name: Publish Skia Binary Packages
 on:
   workflow_dispatch:
     inputs:
-      skia_version:
-        description: 'Skia version (e.g., m144c)'
-        required: true
-        type: string
-      npm_version:
-        description: 'NPM version (optional, derived from skia_version: m144c → 144.3.0)'
-        required: false
-        type: string
-      graphite:
-        description: 'Publish Graphite packages'
-        type: boolean
-        default: false
       dry_run:
         description: 'Dry run (skip npm publish)'
         type: boolean
@@ -31,28 +19,10 @@ jobs:
             echo "The workflow will generate and verify packages but skip publishing."
           fi
 
-  generate-matrix:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-    steps:
-      - name: Set matrix
-        id: set-matrix
-        run: |
-          if [ "${{ inputs.graphite }}" = "true" ]; then
-            echo 'matrix={"package":["android","apple-ios","apple-macos","headers"]}' >> $GITHUB_OUTPUT
-          else
-            echo 'matrix={"package":["android","apple-ios","apple-tvos","apple-macos"]}' >> $GITHUB_OUTPUT
-          fi
-
   publish:
-    needs: generate-matrix
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -66,65 +36,57 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Generate package (download and bundle binaries)
+      - name: Generate all packages from config
+        run: npx tsx src/generate-packages.ts --config=skia-config.json
+
+      - name: Verify packages
         run: |
-          GRAPHITE_FLAG=""
-          NPM_VERSION_FLAG=""
-          if [ "${{ inputs.graphite }}" = "true" ]; then
-            GRAPHITE_FLAG="--graphite"
-          fi
-          if [ -n "${{ inputs.npm_version }}" ]; then
-            NPM_VERSION_FLAG="--npm-version=${{ inputs.npm_version }}"
-          fi
-          npx tsx src/generate-packages.ts \
-            --package=${{ matrix.package }} \
-            --skia-version=${{ inputs.skia_version }} \
-            $NPM_VERSION_FLAG \
-            $GRAPHITE_FLAG
+          echo "Generated packages:"
+          ls -la dist/
 
-      - name: Verify package structure
-        run: |
-          PREFIX="${{ inputs.graphite == 'true' && 'skia-graphite' || 'skia' }}"
-          PKG_DIR="dist/react-native-$PREFIX-${{ matrix.package }}"
+          for pkg_dir in dist/react-native-skia-*/; do
+            echo ""
+            echo "=== $pkg_dir ==="
 
-          echo "Package directory contents:"
-          ls -la "$PKG_DIR/"
+            if [ ! -f "$pkg_dir/package.json" ]; then
+              echo "ERROR: package.json not found in $pkg_dir"
+              exit 1
+            fi
 
-          echo ""
-          echo "package.json:"
-          cat "$PKG_DIR/package.json"
+            echo "package.json:"
+            cat "$pkg_dir/package.json"
 
-          echo ""
-          echo "libs/ contents:"
-          find "$PKG_DIR/libs" -type f | head -20
+            if [ ! -d "$pkg_dir/libs" ] || [ -z "$(ls -A $pkg_dir/libs)" ]; then
+              echo "ERROR: libs/ directory is empty in $pkg_dir"
+              exit 1
+            fi
 
-          # Verify required files exist
-          if [ ! -f "$PKG_DIR/package.json" ]; then
-            echo "ERROR: package.json not found"
-            exit 1
-          fi
-
-          # Verify libs directory has content
-          if [ -z "$(ls -A $PKG_DIR/libs)" ]; then
-            echo "ERROR: libs/ directory is empty"
-            exit 1
-          fi
+            echo ""
+            echo "libs/ contents:"
+            find "$pkg_dir/libs" -type f | head -10
+          done
 
       - name: Publish to npm (dry run)
         if: ${{ github.ref == 'refs/heads/main' && inputs.dry_run == true }}
         run: |
-          PREFIX="${{ inputs.graphite == 'true' && 'skia-graphite' || 'skia' }}"
-          cd "dist/react-native-$PREFIX-${{ matrix.package }}"
-          npm publish --access public --dry-run
+          for pkg_dir in dist/react-native-skia-*/; do
+            echo "Publishing (dry run): $pkg_dir"
+            cd "$pkg_dir"
+            npm publish --access public --dry-run
+            cd - > /dev/null
+          done
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish to npm
         if: ${{ github.ref == 'refs/heads/main' && inputs.dry_run == false }}
         run: |
-          PREFIX="${{ inputs.graphite == 'true' && 'skia-graphite' || 'skia' }}"
-          cd "dist/react-native-$PREFIX-${{ matrix.package }}"
-          npm publish --access public
+          for pkg_dir in dist/react-native-skia-*/; do
+            echo "Publishing: $pkg_dir"
+            cd "$pkg_dir"
+            npm publish --access public
+            cd - > /dev/null
+          done
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -134,28 +96,28 @@ jobs:
           echo "::warning::Skipping publish - workflow must be run from main branch"
           echo "Current ref: ${{ github.ref }}"
 
-      - name: Upload package as artifact
+      - name: Upload packages as artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: react-native-${{ inputs.graphite == true && 'skia-graphite' || 'skia' }}-${{ matrix.package }}
-          path: dist/react-native-${{ inputs.graphite == true && 'skia-graphite' || 'skia' }}-${{ matrix.package }}/
+          name: skia-packages
+          path: dist/
           retention-days: 7
 
   summary:
-    needs: [generate-matrix, publish]
+    needs: publish
     runs-on: ubuntu-latest
     if: always()
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Summary
         run: |
           echo "## Skia Binary Packages" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Skia Version | \`${{ inputs.skia_version }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| NPM Version | \`${{ inputs.npm_version }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Backend | ${{ inputs.graphite == true && 'Graphite' || 'Ganesh' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Dry Run | ${{ inputs.dry_run }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
@@ -168,19 +130,26 @@ jobs:
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Packages" >> $GITHUB_STEP_SUMMARY
+          echo "### Packages (from skia-config.json)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          PREFIX="${{ inputs.graphite == true && 'skia-graphite' || 'skia' }}"
-          echo "| Package | NPM |" >> $GITHUB_STEP_SUMMARY
-          echo "|---------|-----|" >> $GITHUB_STEP_SUMMARY
+          # Read versions from config
+          SKIA_VERSION=$(jq -r '.skia.version // "N/A"' skia-config.json)
+          GRAPHITE_VERSION=$(jq -r '.["skia-graphite"].version // "N/A"' skia-config.json)
 
-          if [ "${{ inputs.graphite }}" = "true" ]; then
-            for pkg in android apple-ios apple-macos headers; do
-              echo "| \`react-native-$PREFIX-$pkg\` | [\`${{ inputs.npm_version }}\`](https://www.npmjs.com/package/react-native-$PREFIX-$pkg/v/${{ inputs.npm_version }}) |" >> $GITHUB_STEP_SUMMARY
-            done
-          else
-            for pkg in android apple-ios apple-tvos apple-macos; do
-              echo "| \`react-native-$PREFIX-$pkg\` | [\`${{ inputs.npm_version }}\`](https://www.npmjs.com/package/react-native-$PREFIX-$pkg/v/${{ inputs.npm_version }}) |" >> $GITHUB_STEP_SUMMARY
-            done
-          fi
+          echo "#### Ganesh (Skia $SKIA_VERSION)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Package |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|" >> $GITHUB_STEP_SUMMARY
+          for pkg in android apple-ios apple-tvos apple-macos; do
+            echo "| \`react-native-skia-$pkg\` |" >> $GITHUB_STEP_SUMMARY
+          done
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### Graphite (Skia $GRAPHITE_VERSION)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Package |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|" >> $GITHUB_STEP_SUMMARY
+          for pkg in android apple-ios apple-macos headers; do
+            echo "| \`react-native-skia-graphite-$pkg\` |" >> $GITHUB_STEP_SUMMARY
+          done
