@@ -633,10 +633,6 @@ const main = async (): Promise<void> => {
     try {
       const generatedDirs = await generateAllFromConfig(args.config as string, outputDir);
       console.log(`Generated ${generatedDirs.length} package(s)`);
-
-      if (process.env.GITHUB_OUTPUT) {
-        fs.appendFileSync(process.env.GITHUB_OUTPUT, `packages=${generatedDirs.join("\n")}\n`);
-      }
     } catch (error) {
       console.error(`Error: ${(error as Error).message}`);
       process.exit(1);
@@ -713,12 +709,6 @@ const main = async (): Promise<void> => {
   }
 
   console.log(`Generated ${generatedDirs.length} package(s)`);
-
-  // Output generated directories for use in CI
-  if (process.env.GITHUB_OUTPUT) {
-    const output = generatedDirs.join("\n");
-    fs.appendFileSync(process.env.GITHUB_OUTPUT, `packages=${output}\n`);
-  }
 };
 
 main();
