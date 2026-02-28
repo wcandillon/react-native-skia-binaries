@@ -1,0 +1,173 @@
+name: Publish Skia Binary Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      skia_version:
+        description: 'Skia version (e.g., m144b)'
+        required: true
+        type: string
+      npm_version:
+        description: 'NPM package version (e.g., 144.2.0)'
+        required: true
+        type: string
+      graphite:
+        description: 'Publish Graphite packages'
+        type: boolean
+        default: false
+      dry_run:
+        description: 'Dry run (skip npm publish)'
+        type: boolean
+        default: true
+
+jobs:
+  generate-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Set matrix
+        id: set-matrix
+        run: |
+          if [ "${{ inputs.graphite }}" = "true" ]; then
+            echo 'matrix={"package":["android","apple-ios","apple-macos","headers"]}' >> $GITHUB_OUTPUT
+          else
+            echo 'matrix={"package":["android","apple-ios","apple-tvos","apple-macos"]}' >> $GITHUB_OUTPUT
+          fi
+
+  publish:
+    needs: generate-matrix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # for npm provenance
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Generate package
+        run: |
+          GRAPHITE_FLAG=""
+          if [ "${{ inputs.graphite }}" = "true" ]; then
+            GRAPHITE_FLAG="--graphite"
+          fi
+          npx tsx src/generate-packages.ts \
+            --package=${{ matrix.package }} \
+            --skia-version=${{ inputs.skia_version }} \
+            --npm-version=${{ inputs.npm_version }} \
+            $GRAPHITE_FLAG
+
+      - name: Verify package structure
+        run: |
+          SUBDIR="${{ inputs.graphite == 'true' && 'graphite' || 'ganesh' }}"
+          PKG_DIR="dist/$SUBDIR/${{ matrix.package }}"
+
+          echo "Package directory contents:"
+          ls -la "$PKG_DIR/"
+
+          echo ""
+          echo "package.json:"
+          cat "$PKG_DIR/package.json"
+
+          # Verify required files exist
+          if [ ! -f "$PKG_DIR/package.json" ]; then
+            echo "ERROR: package.json not found"
+            exit 1
+          fi
+
+          if [ ! -f "$PKG_DIR/postinstall.mjs" ]; then
+            echo "ERROR: postinstall.mjs not found"
+            exit 1
+          fi
+
+      - name: Test postinstall script (download binaries)
+        run: |
+          SUBDIR="${{ inputs.graphite == 'true' && 'graphite' || 'ganesh' }}"
+          PKG_DIR="dist/$SUBDIR/${{ matrix.package }}"
+
+          echo "Testing postinstall script..."
+          cd "$PKG_DIR"
+          node postinstall.mjs
+
+          echo ""
+          echo "Downloaded files:"
+          find libs -type f | head -20 || echo "No files found"
+
+      - name: Publish to npm (dry run)
+        if: ${{ inputs.dry_run == true }}
+        run: |
+          SUBDIR="${{ inputs.graphite == 'true' && 'graphite' || 'ganesh' }}"
+          cd "dist/$SUBDIR/${{ matrix.package }}"
+          npm publish --provenance --access public --dry-run
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish to npm
+        if: ${{ inputs.dry_run == false }}
+        run: |
+          SUBDIR="${{ inputs.graphite == 'true' && 'graphite' || 'ganesh' }}"
+          cd "dist/$SUBDIR/${{ matrix.package }}"
+          npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Upload package as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.graphite == true && 'skia-graphite' || 'skia' }}-${{ matrix.package }}
+          path: dist/${{ inputs.graphite == true && 'graphite' || 'ganesh' }}/${{ matrix.package }}/
+          retention-days: 7
+
+  summary:
+    needs: [generate-matrix, publish]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Summary
+        run: |
+          echo "## Skia Binary Packages" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Skia Version | \`${{ inputs.skia_version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| NPM Version | \`${{ inputs.npm_version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Backend | ${{ inputs.graphite == true && 'Graphite' || 'Ganesh' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dry Run | ${{ inputs.dry_run }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "> **Note**: This was a dry run. No packages were published to npm." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Packages published successfully to npm!" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Packages" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          PREFIX="${{ inputs.graphite == true && 'skia-graphite' || 'skia' }}"
+          echo "| Package | NPM |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-----|" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ inputs.graphite }}" = "true" ]; then
+            for pkg in android apple-ios apple-macos headers; do
+              echo "| \`react-native-$PREFIX-$pkg\` | [\`${{ inputs.npm_version }}\`](https://www.npmjs.com/package/react-native-$PREFIX-$pkg/v/${{ inputs.npm_version }}) |" >> $GITHUB_STEP_SUMMARY
+            done
+          else
+            for pkg in android apple-ios apple-tvos apple-macos; do
+              echo "| \`react-native-$PREFIX-$pkg\` | [\`${{ inputs.npm_version }}\`](https://www.npmjs.com/package/react-native-$PREFIX-$pkg/v/${{ inputs.npm_version }}) |" >> $GITHUB_STEP_SUMMARY
+            done
+          fi

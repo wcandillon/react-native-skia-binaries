@@ -1,0 +1,24 @@
+{
+  "name": "react-native-skia-binaries",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Build tools for generating and publishing Skia binary packages for React Native Skia",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "generate": "tsx src/generate-packages.ts",
+    "download": "tsx src/download-binaries.ts",
+    "verify": "tsx src/verify-checksums.ts",
+    "clean": "rm -rf dist libs"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.2.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wcandillon/react-native-skia-binaries.git"
+  },
+  "license": "MIT"
+}
