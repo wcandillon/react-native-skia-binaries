@@ -414,6 +414,91 @@ const downloadAndExtractAsset = async (
   }
 };
 
+// Required .a files for Android based on CMakeLists.txt
+const ANDROID_REQUIRED_LIBS = new Set([
+  "libskia.a",
+  "libsvg.a",
+  "libskshaper.a",
+  "libskottie.a",
+  "libsksg.a",
+  "libskparagraph.a",
+  "libskunicode_core.a",
+  "libskunicode_icu.a",
+  "libpathops.a",
+  "libjsonreader.a",
+]);
+
+const cleanupAndroidLibs = (libsDir: string): void => {
+  const entries = fs.readdirSync(libsDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const archDir = path.join(libsDir, entry.name);
+    const files = fs.readdirSync(archDir);
+    let removed = 0;
+    for (const file of files) {
+      if (!ANDROID_REQUIRED_LIBS.has(file)) {
+        fs.rmSync(path.join(archDir, file), { recursive: true, force: true });
+        removed++;
+      }
+    }
+    if (removed > 0) {
+      console.log(`    Cleaned ${entry.name}: removed ${removed} unnecessary file(s)`);
+    }
+  }
+};
+
+const findNdkStripTool = (): string | null => {
+  const ndkPaths: string[] = [];
+
+  if (process.env.ANDROID_NDK_HOME) {
+    ndkPaths.push(process.env.ANDROID_NDK_HOME);
+  }
+
+  const androidHome = process.env.ANDROID_HOME;
+  if (androidHome) {
+    const ndkDir = path.join(androidHome, "ndk");
+    if (fs.existsSync(ndkDir)) {
+      const versions = fs.readdirSync(ndkDir).sort().reverse();
+      for (const version of versions) {
+        ndkPaths.push(path.join(ndkDir, version));
+      }
+    }
+  }
+
+  for (const ndkPath of ndkPaths) {
+    const prebuiltDir = path.join(ndkPath, "toolchains", "llvm", "prebuilt");
+    if (!fs.existsSync(prebuiltDir)) continue;
+    const platforms = fs.readdirSync(prebuiltDir);
+    for (const platform of platforms) {
+      const stripPath = path.join(prebuiltDir, platform, "bin", "llvm-strip");
+      if (fs.existsSync(stripPath)) return stripPath;
+    }
+  }
+
+  return null;
+};
+
+const stripDebugSymbols = async (libsDir: string): Promise<void> => {
+  const stripTool = findNdkStripTool();
+  if (!stripTool) {
+    throw new Error(
+      "Could not find llvm-strip in Android NDK. Set ANDROID_NDK_HOME or ANDROID_HOME."
+    );
+  }
+  console.log(`    Using strip tool: ${stripTool}`);
+
+  const entries = fs.readdirSync(libsDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const archDir = path.join(libsDir, entry.name);
+    const files = fs.readdirSync(archDir).filter((f) => f.endsWith(".a"));
+    for (const file of files) {
+      await runCommand(stripTool, ["--strip-debug", path.join(archDir, file)]);
+    }
+    console.log(`    Stripped debug symbols from ${entry.name} (${files.length} libs)`);
+  }
+};
+
 // --- Package generation ---
 
 interface GeneratedPackageJson {
@@ -548,6 +633,14 @@ const generatePackage = async (
   } else if (pkg.artifact) {
     console.log(`    Downloading ${pkg.artifact}...`);
     await downloadAndExtractAsset(pkg.artifact, releaseTag, libsDir, pkg.libSubdir);
+  }
+
+  // Clean up Android Graphite libs to only keep required files and create marker
+  if (graphite && pkg.platform === "android") {
+    cleanupAndroidLibs(libsDir);
+    await stripDebugSymbols(libsDir);
+    fs.writeFileSync(path.join(libsDir, "graphite.enabled"), "");
+    console.log(`    Created graphite.enabled marker file`);
   }
 
   // Generate package.json
