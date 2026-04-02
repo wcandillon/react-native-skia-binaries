@@ -23,6 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -75,8 +76,6 @@ jobs:
             npm publish --access public --dry-run
             cd - > /dev/null
           done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish to npm
         if: ${{ github.ref == 'refs/heads/main' && inputs.dry_run == false }}
@@ -84,11 +83,9 @@ jobs:
           for pkg_dir in dist/react-native-skia-*/; do
             echo "Publishing: $pkg_dir"
             cd "$pkg_dir"
-            npm publish --access public
+            npm publish --access public --provenance
             cd - > /dev/null
           done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Skip publish (not on main)
         if: ${{ github.ref != 'refs/heads/main' }}
