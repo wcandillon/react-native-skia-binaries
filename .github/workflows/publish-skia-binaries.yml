@@ -3,6 +3,14 @@ name: Publish Skia Binary Packages
 on:
   workflow_dispatch:
     inputs:
+      variant:
+        description: 'Which packages to publish'
+        type: choice
+        options:
+          - all
+          - ganesh
+          - graphite
+        default: all
       dry_run:
         description: 'Dry run (skip npm publish)'
         type: boolean
@@ -41,7 +49,7 @@ jobs:
         run: npm install
 
       - name: Generate all packages from config
-        run: npx tsx src/generate-packages.ts --config=skia-config.json
+        run: npx tsx src/generate-packages.ts --config=skia-config.json --variant=${{ inputs.variant }}
 
       - name: Verify packages
         run: |

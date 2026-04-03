@@ -10,6 +10,7 @@
  *
  * Options:
  *   --config        Config file path (generates all packages for both backends)
+ *   --variant       Which packages to generate: all, ganesh, or graphite (default: all)
  *   --skia-version  Skia milestone version (e.g., m144c)
  *   --npm-version   NPM package version (optional, derived from skia-version)
  *                   m144 → 144.0.0, m144a → 144.1.0, m144b → 144.2.0, m144c → 144.3.0
@@ -670,7 +671,8 @@ interface ConfigFile {
 
 const generateAllFromConfig = async (
   configPath: string,
-  outputDir: string
+  outputDir: string,
+  variant: "all" | "ganesh" | "graphite" = "all"
 ): Promise<string[]> => {
   const configFullPath = path.resolve(configPath);
   if (!fs.existsSync(configFullPath)) {
@@ -681,7 +683,7 @@ const generateAllFromConfig = async (
   const generatedDirs: string[] = [];
 
   // Generate Ganesh packages
-  if (config.skia?.version) {
+  if (config.skia?.version && (variant === "all" || variant === "ganesh")) {
     const skiaVersion = config.skia.version;
     const npmVersion = deriveNpmVersion(skiaVersion);
 
@@ -698,7 +700,7 @@ const generateAllFromConfig = async (
   }
 
   // Generate Graphite packages
-  if (config["skia-graphite"]?.version) {
+  if (config["skia-graphite"]?.version && (variant === "all" || variant === "graphite")) {
     const skiaVersion = config["skia-graphite"].version;
     const npmVersion = deriveNpmVersion(skiaVersion);
 
@@ -724,7 +726,8 @@ const main = async (): Promise<void> => {
   // Config mode: generate all packages from config file
   if (args.config) {
     try {
-      const generatedDirs = await generateAllFromConfig(args.config as string, outputDir);
+      const variant = (args.variant as string) || "all";
+      const generatedDirs = await generateAllFromConfig(args.config as string, outputDir, variant as "all" | "ganesh" | "graphite");
       console.log(`Generated ${generatedDirs.length} package(s)`);
     } catch (error) {
       console.error(`Error: ${(error as Error).message}`);
