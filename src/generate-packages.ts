@@ -4,6 +4,7 @@
  *
  * Usage:
  *   npx tsx src/generate-packages.ts --config=skia-config.json
+ *   npx tsx src/generate-packages.ts --config=skia-config.json --patch=1
  *   npx tsx src/generate-packages.ts --skia-version=m144c
  *   npx tsx src/generate-packages.ts --skia-version=m144c --package=android
  *   npx tsx src/generate-packages.ts --skia-version=m142b --graphite
@@ -11,6 +12,7 @@
  * Options:
  *   --config        Config file path (generates all packages for both backends)
  *   --variant       Which packages to generate: all, ganesh, or graphite (default: all)
+ *   --patch         Patch version number (default: 0). e.g., m147a + --patch=1 → 147.1.1
  *   --skia-version  Skia milestone version (e.g., m144c)
  *   --npm-version   NPM package version (optional, derived from skia-version)
  *                   m144 → 144.0.0, m144a → 144.1.0, m144b → 144.2.0, m144c → 144.3.0
@@ -142,8 +144,11 @@ const parseArgs = (): Args => {
  * m144a → 144.1.0
  * m144b → 144.2.0
  * m144c → 144.3.0
+ *
+ * With patch version:
+ * m147a + patch=1 → 147.1.1
  */
-const deriveNpmVersion = (skiaVersion: string): string => {
+const deriveNpmVersion = (skiaVersion: string, patch = 0): string => {
   const match = skiaVersion.match(/^m(\d+)([a-z])?$/);
   if (!match) {
     throw new Error(
@@ -157,7 +162,7 @@ const deriveNpmVersion = (skiaVersion: string): string => {
   // Convert suffix letter to minor version: a=1, b=2, c=3, etc.
   const minor = suffix ? suffix.charCodeAt(0) - "a".charCodeAt(0) + 1 : 0;
 
-  return `${major}.${minor}.0`;
+  return `${major}.${minor}.${patch}`;
 };
 
 // --- Download utilities ---
@@ -427,6 +432,7 @@ const ANDROID_REQUIRED_LIBS = new Set([
   "libskunicode_icu.a",
   "libpathops.a",
   "libjsonreader.a",
+  "libdawn_combined.a", // Required for Graphite (Dawn/WebGPU backend)
 ]);
 
 const cleanupAndroidLibs = (libsDir: string): void => {
@@ -672,7 +678,8 @@ interface ConfigFile {
 const generateAllFromConfig = async (
   configPath: string,
   outputDir: string,
-  variant: "all" | "ganesh" | "graphite" = "all"
+  variant: "all" | "ganesh" | "graphite" = "all",
+  patch = 0
 ): Promise<string[]> => {
   const configFullPath = path.resolve(configPath);
   if (!fs.existsSync(configFullPath)) {
@@ -685,7 +692,7 @@ const generateAllFromConfig = async (
   // Generate Ganesh packages
   if (config.skia?.version && (variant === "all" || variant === "ganesh")) {
     const skiaVersion = config.skia.version;
-    const npmVersion = deriveNpmVersion(skiaVersion);
+    const npmVersion = deriveNpmVersion(skiaVersion, patch);
 
     console.log("Generating Ganesh binary packages...");
     console.log(`  Skia version: ${skiaVersion}`);
@@ -702,7 +709,7 @@ const generateAllFromConfig = async (
   // Generate Graphite packages
   if (config["skia-graphite"]?.version && (variant === "all" || variant === "graphite")) {
     const skiaVersion = config["skia-graphite"].version;
-    const npmVersion = deriveNpmVersion(skiaVersion);
+    const npmVersion = deriveNpmVersion(skiaVersion, patch);
 
     console.log("Generating Graphite binary packages...");
     console.log(`  Skia version: ${skiaVersion}`);
@@ -727,7 +734,8 @@ const main = async (): Promise<void> => {
   if (args.config) {
     try {
       const variant = (args.variant as string) || "all";
-      const generatedDirs = await generateAllFromConfig(args.config as string, outputDir, variant as "all" | "ganesh" | "graphite");
+      const patch = args.patch ? parseInt(args.patch as string, 10) : 0;
+      const generatedDirs = await generateAllFromConfig(args.config as string, outputDir, variant as "all" | "ganesh" | "graphite", patch);
       console.log(`Generated ${generatedDirs.length} package(s)`);
     } catch (error) {
       console.error(`Error: ${(error as Error).message}`);
