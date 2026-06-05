@@ -55,6 +55,9 @@ jobs:
       - name: Generate all packages from config
         run: npx tsx src/generate-packages.ts --config=skia-config.json --variant=${{ inputs.variant }} --patch=${{ inputs.patch_version }}
 
+      - name: Validate SwiftPM manifests
+        run: npx tsx src/validate-spm.ts
+
       - name: Verify packages
         run: |
           echo "Generated packages:"
