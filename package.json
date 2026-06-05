@@ -9,6 +9,7 @@
     "generate": "npx tsx src/generate-packages.ts --config=skia-config.json",
     "download": "tsx src/download-binaries.ts",
     "verify": "tsx src/verify-checksums.ts",
+    "validate-spm": "tsx src/validate-spm.ts",
     "clean": "rm -rf dist libs"
   },
   "devDependencies": {
