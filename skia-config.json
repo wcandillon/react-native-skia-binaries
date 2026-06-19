@@ -1,25 +1,25 @@
 {
   "skia": {
-    "version": "m147a",
+    "version": "m150",
     "checksums": {
-      "android-armeabi-v7a": "bd72f5cfcccf9e0fac8aad099df51e3e97da737671e760e9749e90d29c546721",
-      "android-arm64-v8a": "a31dbf6f291981b832e8559e956797868678759bc312618426057ce47db5e56a",
-      "android-x86": "aea516c4e0ff4f4057972553418ec111b7c812082b2712789a28deb9d1da0bdd",
-      "android-x86_64": "760043e1b850889df115b7451126880f8d6e478e9cfac56afa410054176bc8a6",
-      "apple-ios-xcframeworks": "becad6601600ac3d1ee2f5e4f1d41ef4e171e861205d76b2ebc7abb1f2408bcc",
-      "apple-tvos-xcframeworks": "d1bf66a9e540c653eb479482e36d85ac6a3ae089fe555745692ae179e6e62073",
-      "apple-macos-xcframeworks": "baff1dfe79d6c1a0607e97b3fc27fa35954a145f0771e0867c4ba10f8844b259"
+      "android-armeabi-v7a": "3404df90f7e8652074d287018344e80a459f8ced089446d0b855bd93fd965a40",
+      "android-arm64-v8a": "4f4ae086d2e80f31e8983beeb33f88dd6d52056061270cee93a7aa8bfd0de0f1",
+      "android-x86": "b0ab0e10f0bb9eff98cc854f46ae6fef5d7b930179a541c6577d28ba600ab2fd",
+      "android-x86_64": "c1104f4452006fb4f4c9e1f36e99fb2e38a97c87ec3cf17839584b8c9bafc189",
+      "apple-ios-xcframeworks": "8cbba4605a3c581503ca205db5d2b168fcefebfe063e5c46354bb694603c99aa",
+      "apple-tvos-xcframeworks": "1fb6db2b984db0b41cb223ab6a1e237aff21a4b09db370ca71d20653394583ce",
+      "apple-macos-xcframeworks": "9b5b21ecafbce1160243196b39e2cf3d1deffea18c31e4f7a24fad850893bd13"
     }
   },
   "skia-graphite": {
-    "version": "m147a",
+    "version": "m150",
     "checksums": {
-      "android-armeabi-v7a": "84bdd468bd50f5e1c32ea8809eba400f1da74893f4675b2822af26ead6d3acd7",
-      "android-arm64-v8a": "691865ca5fb750de65f904d163a6a2feff2b671268bb1c781e73d0db99c2e41f",
-      "android-x86": "7cc2993d68ef7cb50c542b04385239674c4991e519c1890742100cddddf624f1",
-      "android-x86_64": "06d5f88bd12ead9134a0fd512dd54e95fbb936f78d29c507155106cb49c1f163",
-      "apple-ios-xcframeworks": "55b188a6f604411ddccff96253268db0134acb6ec5751b196b7552c104d61d7c",
-      "apple-macos-xcframeworks": "a2cf4591f2471f1b36dc2eae5d4e8c098243b738656dd9daa1ea57ee59cb0a63"
+      "android-armeabi-v7a": "47f52c87a06570a7a6cc48aa77acd0c92189fb165658d35afdc3b567888e33cf",
+      "android-arm64-v8a": "9c64fc4e7be79aa9475c696ff7b28ae093618df2849ba391338c149af37bb3a2",
+      "android-x86": "69e00e64a3af2dc0a2b6f1e53d207edd73712078c86e0ea46b01f5c852a713cd",
+      "android-x86_64": "524db958a49239d73c7ffba26d7c07caf02ccf21d130d18be5327f61a549ff5a",
+      "apple-ios-xcframeworks": "62bedd15abd26615a0eff5510769f2ea57c7f6246de5556ce1d0f971c7734b1d",
+      "apple-macos-xcframeworks": "b4e517292b97dc3d0c51e09e84780ba81845038c5aa9a04617d9de368b3360ce"
     }
   }
 }
