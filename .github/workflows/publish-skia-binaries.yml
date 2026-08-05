@@ -43,7 +43,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # npm@latest requires ^22.22.2 || ^24.15.0 || >=26.0.0
+          node-version: 22
           registry-url: 'https://registry.npmjs.org'
 
       - name: Upgrade npm
