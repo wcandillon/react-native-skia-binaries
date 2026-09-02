@@ -521,6 +521,7 @@ interface GeneratedPackageJson {
   publishConfig: {
     access: string;
   };
+  os?: string[];
   files: string[];
   skia: {
     version: string;
@@ -565,6 +566,11 @@ const generatePackageJson = (
     publishConfig: {
       access: "public",
     },
+    // The xcframeworks are only ever consumed by Xcode, which runs on macOS.
+    // Declaring the host OS lets package managers skip these packages on other
+    // platforms once @shopify/react-native-skia lists them as optional
+    // dependencies (e.g. Linux CI for a web or Android build).
+    ...(pkg.platform === "apple" ? { os: ["darwin"] } : {}),
     files: hasPackageSwift ? ["libs/**", "Package.swift"] : ["libs/**"],
     skia: {
       version: skiaVersion,
