@@ -22,17 +22,18 @@
  */
 
 import fs from "fs";
-import https from "https";
 import path from "path";
-import os from "os";
-import { spawn } from "child_process";
 import { fileURLToPath } from "url";
+
+import {
+  copyDir,
+  downloadAndExtractAsset,
+  downloadXcframeworks,
+  runCommand,
+} from "./release-assets.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.join(__dirname, "..");
-
-// GitHub repository for downloading binaries
-const REPO = "shopify/react-native-skia";
 
 interface AndroidArch {
   arch: string;
@@ -163,261 +164,6 @@ const deriveNpmVersion = (skiaVersion: string, patch = 0): string => {
   const minor = suffix ? suffix.charCodeAt(0) - "a".charCodeAt(0) + 1 : 0;
 
   return `${major}.${minor}.${patch}`;
-};
-
-// --- Download utilities ---
-
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
-
-const runCommand = (
-  command: string,
-  args: string[],
-  options: object = {}
-): Promise<void> => {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      stdio: ["ignore", "inherit", "inherit"],
-      ...options,
-    });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(`Command ${command} exited with code ${code}`));
-      }
-    });
-  });
-};
-
-interface DownloadError extends Error {
-  statusCode?: number;
-  code?: string;
-}
-
-const downloadToFile = (
-  url: string,
-  destPath: string,
-  maxRetries = 5
-): Promise<void> => {
-  fs.mkdirSync(path.dirname(destPath), { recursive: true });
-
-  const attemptDownload = (): Promise<void> => {
-    return new Promise((resolve, reject) => {
-      const request = (currentUrl: string): void => {
-        https
-          .get(currentUrl, { headers: { "User-Agent": "node" } }, (res) => {
-            if (
-              res.statusCode &&
-              [301, 302, 303, 307, 308].includes(res.statusCode)
-            ) {
-              const { location } = res.headers;
-              if (location) {
-                res.resume();
-                request(location);
-              } else {
-                reject(new Error(`Redirect without location for ${currentUrl}`));
-              }
-              return;
-            }
-
-            if (res.statusCode !== 200) {
-              const error: DownloadError = new Error(
-                `Failed to download: ${res.statusCode} ${res.statusMessage}`
-              );
-              error.statusCode = res.statusCode;
-              res.resume();
-              reject(error);
-              return;
-            }
-
-            const fileStream = fs.createWriteStream(destPath);
-            res.pipe(fileStream);
-
-            fileStream.on("finish", () => {
-              fileStream.close((err) => {
-                if (err) {
-                  fileStream.destroy();
-                  fs.unlink(destPath, () => reject(err));
-                } else {
-                  resolve();
-                }
-              });
-            });
-
-            const cleanup = (error: Error): void => {
-              fileStream.destroy();
-              fs.unlink(destPath, () => reject(error));
-            };
-
-            res.on("error", cleanup);
-            fileStream.on("error", cleanup);
-          })
-          .on("error", reject);
-      };
-
-      request(url);
-    });
-  };
-
-  const downloadWithRetry = async (retryCount = 0): Promise<void> => {
-    try {
-      await attemptDownload();
-    } catch (error) {
-      const downloadError = error as DownloadError;
-      const isRateLimit =
-        downloadError.statusCode === 403 ||
-        downloadError.message.includes("rate limit");
-      const shouldRetry =
-        retryCount < maxRetries &&
-        (isRateLimit ||
-          downloadError.code === "ECONNRESET" ||
-          downloadError.code === "ETIMEDOUT");
-
-      if (shouldRetry) {
-        const delay = Math.pow(2, retryCount) * 1000;
-        console.log(
-          `      Retry ${retryCount + 1}/${maxRetries} in ${delay / 1000}s...`
-        );
-        await sleep(delay);
-        return downloadWithRetry(retryCount + 1);
-      } else {
-        throw error;
-      }
-    }
-  };
-
-  return downloadWithRetry();
-};
-
-const extractTarGz = async (archivePath: string, destDir: string): Promise<void> => {
-  fs.mkdirSync(destDir, { recursive: true });
-
-  const args = ["-xzf", archivePath, "-C", destDir];
-  const candidates =
-    process.platform === "win32"
-      ? [
-          "tar.exe",
-          path.join(
-            process.env.SystemRoot ?? "C:\\Windows",
-            "System32",
-            "tar.exe"
-          ),
-        ]
-      : ["tar"];
-
-  let lastError: Error | undefined;
-  for (const candidate of candidates) {
-    try {
-      await runCommand(candidate, args);
-      return;
-    } catch (err) {
-      const error = err as NodeJS.ErrnoException;
-      if (error.code === "ENOENT") {
-        lastError = new Error(`Command ${candidate} not found`);
-        continue;
-      }
-      lastError = error;
-    }
-  }
-
-  throw new Error(`Failed to extract: ${lastError?.message ?? "unknown error"}`);
-};
-
-const copyDir = (src: string, dest: string): void => {
-  fs.mkdirSync(dest, { recursive: true });
-  const entries = fs.readdirSync(src, { withFileTypes: true });
-
-  for (const entry of entries) {
-    const srcPath = path.join(src, entry.name);
-    const destPath = path.join(dest, entry.name);
-
-    const stat = fs.lstatSync(srcPath);
-    if (
-      stat.isSocket() ||
-      stat.isFIFO() ||
-      stat.isCharacterDevice() ||
-      stat.isBlockDevice()
-    ) {
-      continue;
-    }
-
-    if (entry.isDirectory()) {
-      copyDir(srcPath, destPath);
-    } else {
-      fs.copyFileSync(srcPath, destPath);
-    }
-  }
-};
-
-const downloadAndExtractAsset = async (
-  artifact: string,
-  releaseTag: string,
-  destDir: string,
-  srcSubdir?: string
-): Promise<void> => {
-  const assetName = `${artifact}-${releaseTag}.tar.gz`;
-  const downloadUrl = `https://github.com/${REPO}/releases/download/${releaseTag}/${assetName}`;
-
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "skia-download-"));
-  const archivePath = path.join(tempDir, assetName);
-  const extractDir = path.join(tempDir, "extracted");
-
-  try {
-    console.log(`      Downloading ${assetName}...`);
-    await downloadToFile(downloadUrl, archivePath);
-
-    console.log(`      Extracting...`);
-    await extractTarGz(archivePath, extractDir);
-
-    // Find the extracted content
-    const extractedContents = fs.readdirSync(extractDir);
-
-    if (extractedContents.length === 0) {
-      throw new Error("Archive extracted but no contents found");
-    }
-
-    // Navigate to source directory
-    let sourceDir = extractDir;
-
-    // If there's a single top-level directory, descend into it
-    if (
-      extractedContents.length === 1 &&
-      fs.statSync(path.join(extractDir, extractedContents[0])).isDirectory()
-    ) {
-      sourceDir = path.join(extractDir, extractedContents[0]);
-
-      // Check if there's a subdir matching srcSubdir
-      if (
-        srcSubdir &&
-        fs.existsSync(path.join(sourceDir, srcSubdir)) &&
-        fs.statSync(path.join(sourceDir, srcSubdir)).isDirectory()
-      ) {
-        sourceDir = path.join(sourceDir, srcSubdir);
-      }
-    }
-
-    // Copy contents to destination
-    fs.mkdirSync(destDir, { recursive: true });
-    const items = fs.readdirSync(sourceDir);
-    for (const item of items) {
-      const srcPath = path.join(sourceDir, item);
-      const destPath = path.join(destDir, item);
-
-      if (fs.statSync(srcPath).isDirectory()) {
-        copyDir(srcPath, destPath);
-      } else {
-        fs.copyFileSync(srcPath, destPath);
-      }
-    }
-
-    // Cleanup temp directory
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  } catch (error) {
-    fs.rmSync(tempDir, { recursive: true, force: true });
-    throw error;
-  }
 };
 
 // Required .a files for Android based on CMakeLists.txt
@@ -725,6 +471,9 @@ const generatePackage = async (
       console.log(`    Downloading ${arch.arch}...`);
       await downloadAndExtractAsset(arch.artifact, releaseTag, archDir, arch.srcSubdir);
     }
+  } else if (pkg.platform === "apple" && pkg.artifact) {
+    console.log(`    Downloading ${pkg.artifact}...`);
+    await downloadXcframeworks(pkg.artifact, releaseTag, libsDir, pkg.libSubdir);
   } else if (pkg.artifact) {
     console.log(`    Downloading ${pkg.artifact}...`);
     await downloadAndExtractAsset(pkg.artifact, releaseTag, libsDir, pkg.libSubdir);
