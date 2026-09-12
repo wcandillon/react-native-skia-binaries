@@ -668,9 +668,14 @@ const REMOTE_SPM_PRODUCT_NAME = "SkiaBinaries";
 // remotely shares a single manifest, and target names must be unique within it.
 // The per-platform xcframeworks reuse the same names (libskia for iOS and for
 // macOS), so adding macOS needs either suffixed target names or xcframeworks
-// merged across platforms, and Graphite ships no tvOS binaries at all. Until
-// then this is Graphite iOS only.
+// merged across platforms. Until then this is iOS only. For the same reason
+// Ganesh and Graphite are never both generated into dist/spm in one run (see
+// their call sites in generateAllFromConfig) — each run picks one variant, and
+// the product name below records which.
 const REMOTE_SPM_SOURCE_PACKAGE = "apple-ios";
+
+const remoteSpmProductName = (graphite: boolean): string =>
+  `${REMOTE_SPM_PRODUCT_NAME}${graphite ? "Graphite" : "Ganesh"}`;
 
 interface RemoteSpmTarget {
   name: string;
@@ -712,7 +717,8 @@ const generateRemoteSpmManifest = (
   targets: RemoteSpmTarget[],
   platforms: string[],
   repo: string,
-  npmVersion: string
+  npmVersion: string,
+  graphite: boolean
 ): string => {
   const platformList = platforms.map((p) => `        ${p}`).join(",\n");
 
@@ -742,7 +748,7 @@ ${platformList}
     ],
     products: [
         .library(
-            name: "${REMOTE_SPM_PRODUCT_NAME}",
+            name: "${remoteSpmProductName(graphite)}",
             targets: [
 ${productTargets}
             ]
@@ -761,6 +767,12 @@ ${binaryTargets}
  * release assets for this version. Consumers depend on it with
  * .package(url:from:) instead of needing the npm package on disk.
  *
+ * One call generates one variant (Ganesh or Graphite) — see the comment on
+ * REMOTE_SPM_SOURCE_PACKAGE for why a single manifest cannot hold both at
+ * once. The product name records which (SkiaBinariesGanesh /
+ * SkiaBinariesGraphite) so a consumer's Package.swift makes clear which one
+ * it links.
+ *
  * The zips are uploaded to the GitHub release tagged <npmVersion> and the
  * manifest is copied to the repository root, both by hand; validate-spm.ts
  * checks that the committed root manifest still matches skia-config.json.
@@ -768,7 +780,8 @@ ${binaryTargets}
 const generateRemoteSpmPackage = async (
   outputDir: string,
   npmVersion: string,
-  repo: string
+  repo: string,
+  graphite: boolean
 ): Promise<void> => {
   const spmDir = path.join(outputDir, REMOTE_SPM_DIR);
   fs.mkdirSync(spmDir, { recursive: true });
@@ -776,13 +789,15 @@ const generateRemoteSpmPackage = async (
   console.log("Generating remote SwiftPM package...");
   console.log(`  Repository: ${repo}`);
   console.log(`  Release tag: ${npmVersion}`);
+  console.log(`  Variant: ${graphite ? "Graphite" : "Ganesh"}`);
 
-  const pkg = GRAPHITE_PACKAGES.find((p) => p.name === REMOTE_SPM_SOURCE_PACKAGE);
+  const packages = graphite ? GRAPHITE_PACKAGES : GANESH_PACKAGES;
+  const pkg = packages.find((p) => p.name === REMOTE_SPM_SOURCE_PACKAGE);
   if (!pkg) {
     throw new Error(`Unknown remote SwiftPM source package: ${REMOTE_SPM_SOURCE_PACKAGE}`);
   }
 
-  const libsDir = path.join(outputDir, getPackageName(pkg, true), "libs");
+  const libsDir = path.join(outputDir, getPackageName(pkg, graphite), "libs");
   const xcframeworks = fs
     .readdirSync(libsDir, { withFileTypes: true })
     .filter((e) => e.isDirectory() && e.name.endsWith(".xcframework"))
@@ -804,7 +819,8 @@ const generateRemoteSpmPackage = async (
     targets,
     [APPLE_SPM_PLATFORM[REMOTE_SPM_SOURCE_PACKAGE]],
     repo,
-    npmVersion
+    npmVersion,
+    graphite
   );
   fs.writeFileSync(path.join(spmDir, "Package.swift"), manifest);
 
@@ -951,8 +967,10 @@ const generateAllFromConfig = async (
   const config: ConfigFile = JSON.parse(fs.readFileSync(configFullPath, "utf8"));
   const generatedDirs: string[] = [];
 
-  // Only the Graphite path writes dist/spm, so clear it here: a Ganesh-only run
-  // must not leave a previous run's manifest for validate-spm to check.
+  // Exactly one variant writes dist/spm per run (see REMOTE_SPM_SOURCE_PACKAGE),
+  // so clear it here: a run that generates only one variant's local packages
+  // must not leave a previous run's remote manifest around for validate-spm to
+  // check against the wrong one.
   fs.rmSync(path.join(outputDir, REMOTE_SPM_DIR), { recursive: true, force: true });
 
   // Generate Ganesh packages
@@ -972,7 +990,7 @@ const generateAllFromConfig = async (
     }
 
     if (variant === "ganesh") {
-      console.log("Skipping remote SwiftPM package: it is published for Graphite iOS only.");
+      await generateRemoteSpmPackage(outputDir, npmVersion, spmRepo, false);
       console.log("");
     }
   }
@@ -993,7 +1011,7 @@ const generateAllFromConfig = async (
       console.log("");
     }
 
-    await generateRemoteSpmPackage(outputDir, npmVersion, spmRepo);
+    await generateRemoteSpmPackage(outputDir, npmVersion, spmRepo, true);
     console.log("");
   }
 

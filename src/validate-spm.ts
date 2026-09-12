@@ -33,8 +33,13 @@ const ROOT_DIR = path.join(__dirname, "..");
 
 // Directory holding the generated remote SwiftPM package, and the npm package
 // its release version is taken from. Both are written by generate-packages.ts.
+// generate-packages.ts generates exactly one variant per run (see its own
+// REMOTE_SPM_SOURCE_PACKAGE comment for why), so which npm package to cross-
+// check against is determined per-manifest from its product name — see
+// remoteSpmVariant() below — rather than hardcoded here.
 const REMOTE_SPM_DIR = "spm";
-const REMOTE_SPM_SOURCE_PACKAGE = "react-native-skia-graphite-apple-ios";
+const remoteSpmSourcePackage = (graphite: boolean): string =>
+  graphite ? "react-native-skia-graphite-apple-ios" : "react-native-skia-apple-ios";
 
 // The manifest the maintainer commits, and the file its release tag must agree with.
 const ROOT_MANIFEST = "Package.swift";
@@ -136,6 +141,25 @@ const parseProductTargets = (manifest: string): string[] => {
     return [];
   }
   return [...productMatch[2].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+};
+
+/** Extracts the `.library(name: "...")` product name. */
+const parseProductName = (manifest: string): string | null => {
+  const match = manifest.match(/\.library\(\s*name:\s*"([^"]+)"/);
+  return match ? match[1] : null;
+};
+
+/**
+ * Ganesh/Graphite from a remote-package manifest's product name
+ * (SkiaBinariesGanesh / SkiaBinariesGraphite — see generate-packages.ts's
+ * remoteSpmProductName). Null when the manifest isn't one of these two, which
+ * a caller treats as a validation failure rather than silently guessing.
+ */
+const remoteSpmVariant = (manifest: string): "ganesh" | "graphite" | null => {
+  const name = parseProductName(manifest);
+  if (name?.endsWith("Graphite")) return "graphite";
+  if (name?.endsWith("Ganesh")) return "ganesh";
+  return null;
 };
 
 const validatePackage = (pkgDir: string, errors: string[]): boolean => {
@@ -243,19 +267,21 @@ const validateRemoteSpmPackage = (distDir: string, errors: string[]): boolean =>
 
   const manifest = fs.readFileSync(manifestPath, "utf8");
 
+  const variant = remoteSpmVariant(manifest);
+  if (variant === null) {
+    fail(
+      `could not determine ganesh/graphite from the product name (expected it to end in "Ganesh" or "Graphite"): ${parseProductName(manifest) ?? "<none found>"}`
+    );
+  }
+  const sourcePackage = remoteSpmSourcePackage(variant === "graphite");
+
   // 1. The release tag in the urls is the version the npm packages carry.
-  const pkgJsonPath = path.join(
-    distDir,
-    REMOTE_SPM_SOURCE_PACKAGE,
-    "package.json"
-  );
+  const pkgJsonPath = path.join(distDir, sourcePackage, "package.json");
   let expectedVersion: string | null = null;
   if (fs.existsSync(pkgJsonPath)) {
     expectedVersion = JSON.parse(fs.readFileSync(pkgJsonPath, "utf8")).version;
   } else {
-    fail(
-      `${REMOTE_SPM_SOURCE_PACKAGE}/package.json not found, cannot check the release version`
-    );
+    fail(`${sourcePackage}/package.json not found, cannot check the release version`);
   }
 
   const targets = parseUrlBinaryTargets(manifest);
@@ -292,22 +318,25 @@ const validateRemoteSpmPackage = (distDir: string, errors: string[]): boolean =>
   return true;
 };
 
-/** The Graphite milestone number declared in skia-config.json, e.g. 152 for m152. */
-const readGraphiteMilestone = (fail: (msg: string) => void): string | null => {
+/**
+ * The milestone number declared in skia-config.json for the given variant,
+ * e.g. 152 for m152. Reads "skia" for Ganesh, "skia-graphite" for Graphite.
+ */
+const readMilestone = (fail: (msg: string) => void, graphite: boolean): string | null => {
   const configPath = path.join(ROOT_DIR, SKIA_CONFIG_FILE);
   if (!fs.existsSync(configPath)) {
     fail(`${SKIA_CONFIG_FILE} not found, cannot check the release tag`);
     return null;
   }
 
-  const config: { "skia-graphite"?: { version?: string } } = JSON.parse(
-    fs.readFileSync(configPath, "utf8")
-  );
-  const version = config["skia-graphite"]?.version;
+  const configKey = graphite ? "skia-graphite" : "skia";
+  const config: { skia?: { version?: string }; "skia-graphite"?: { version?: string } } =
+    JSON.parse(fs.readFileSync(configPath, "utf8"));
+  const version = config[configKey]?.version;
   const match = version?.match(/^m(\d+)/);
   if (!match) {
     fail(
-      `${SKIA_CONFIG_FILE} has no usable "skia-graphite".version: ${version ?? "missing"}`
+      `${SKIA_CONFIG_FILE} has no usable "${configKey}".version: ${version ?? "missing"}`
     );
     return null;
   }
@@ -341,6 +370,14 @@ const validateRootSpmPackage = (distDir: string, errors: string[]): boolean => {
     return true;
   }
 
+  const variant = remoteSpmVariant(manifest);
+  if (variant === null) {
+    fail(
+      `could not determine ganesh/graphite from the product name (expected it to end in "Ganesh" or "Graphite"): ${parseProductName(manifest) ?? "<none found>"}`
+    );
+  }
+  const configKey = variant === "graphite" ? "skia-graphite" : "skia";
+
   // 1. Every url pins the same release tag, and that tag belongs to the Skia
   //    milestone in skia-config.json. Only the major version is compared, so a
   //    patch release of the same milestone is not drift.
@@ -357,12 +394,12 @@ const validateRootSpmPackage = (distDir: string, errors: string[]): boolean => {
     fail(`binaryTargets do not share one release tag: ${[...tags].sort().join(", ")}`);
   }
 
-  const milestone = readGraphiteMilestone(fail);
+  const milestone = readMilestone(fail, variant === "graphite");
   if (milestone !== null) {
     for (const tag of tags) {
       if (tag.split(".")[0] !== milestone) {
         fail(
-          `release tag ${tag} does not match ${SKIA_CONFIG_FILE} skia-graphite m${milestone}: expected ${milestone}.x.y`
+          `release tag ${tag} does not match ${SKIA_CONFIG_FILE} ${configKey} m${milestone}: expected ${milestone}.x.y`
         );
       }
     }
