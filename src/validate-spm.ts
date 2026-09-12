@@ -4,6 +4,15 @@
  * so the failure modes are drift between the manifest, the binaries on disk, and
  * the npm package.json. This script cross-checks all three.
  *
+ * Three kinds of manifest are validated:
+ *   - the per-package ones in dist/<pkg>/, whose binaryTargets are local paths
+ *     into libs/, consumed from node_modules;
+ *   - the generated one in dist/spm/, whose binaryTargets are release asset
+ *     urls, consumed with .package(url:from:);
+ *   - the committed one at the repository root, which is dist/spm/Package.swift
+ *     copied into place by hand at release time, and must stay in sync with
+ *     skia-config.json.
+ *
  * It performs only fast, toolchain-free filesystem checks so it can run in CI
  * before publishing and gate it. For a deeper check that SwiftPM can actually
  * parse and evaluate the manifest, run `swift package dump-package` in each
@@ -16,10 +25,20 @@
 
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.join(__dirname, "..");
+
+// Directory holding the generated remote SwiftPM package, and the npm package
+// its release version is taken from. Both are written by generate-packages.ts.
+const REMOTE_SPM_DIR = "spm";
+const REMOTE_SPM_SOURCE_PACKAGE = "react-native-skia-graphite-apple-ios";
+
+// The manifest the maintainer commits, and the file its release tag must agree with.
+const ROOT_MANIFEST = "Package.swift";
+const SKIA_CONFIG_FILE = "skia-config.json";
 
 interface Args {
   [key: string]: string | boolean;
@@ -42,32 +61,70 @@ const parsePackageName = (manifest: string): string | null => {
   return match ? match[1] : null;
 };
 
-/** Extracts every `path: "..."` from `.binaryTarget(...)` declarations. */
-const parseBinaryTargetPaths = (manifest: string): string[] => {
-  const paths: string[] = [];
+interface BinaryTarget {
+  name?: string;
+  path?: string;
+  url?: string;
+  checksum?: string;
+}
+
+/**
+ * Extracts every `.binaryTarget(...)` declaration. Per-package manifests use
+ * `path:`, the root manifest uses `url:` + `checksum:`, so each field is
+ * optional and callers take the ones their manifest kind carries.
+ */
+const parseBinaryTargets = (manifest: string): BinaryTarget[] => {
+  const targets: BinaryTarget[] = [];
   const regex = /\.binaryTarget\(([\s\S]*?)\)/g;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(manifest)) !== null) {
-    const pathMatch = match[1].match(/path:\s*"([^"]+)"/);
-    if (pathMatch) {
-      paths.push(pathMatch[1]);
-    }
+    const field = (name: string): string | undefined =>
+      match![1].match(new RegExp(`${name}:\\s*"([^"]+)"`))?.[1];
+    targets.push({
+      name: field("name"),
+      path: field("path"),
+      url: field("url"),
+      checksum: field("checksum"),
+    });
   }
-  return paths;
+  return targets;
 };
 
-/** Extracts every `name: "..."` from `.binaryTarget(...)` declarations. */
-const parseBinaryTargetNames = (manifest: string): string[] => {
-  const names: string[] = [];
-  const regex = /\.binaryTarget\(([\s\S]*?)\)/g;
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(manifest)) !== null) {
-    const nameMatch = match[1].match(/name:\s*"([^"]+)"/);
-    if (nameMatch) {
-      names.push(nameMatch[1]);
+type UrlBinaryTarget = Required<Pick<BinaryTarget, "name" | "url" | "checksum">>;
+
+/** Keeps only the binaryTargets that carry a remote url and its checksum. */
+const parseUrlBinaryTargets = (manifest: string): UrlBinaryTarget[] =>
+  parseBinaryTargets(manifest).filter(
+    (t): t is UrlBinaryTarget =>
+      t.name !== undefined && t.url !== undefined && t.checksum !== undefined
+  );
+
+/** Extracts the release tag of a `.../releases/download/<tag>/<asset>` url. */
+const parseReleaseTag = (url: string): string | null => {
+  const match = url.match(/\/releases\/download\/([^/]+)\//);
+  return match ? match[1] : null;
+};
+
+const sha256File = (filePath: string): string =>
+  crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+
+/** Fails unless the library product lists exactly the declared targets. */
+const checkProductClosure = (
+  manifest: string,
+  declared: Set<string>,
+  fail: (msg: string) => void
+): void => {
+  const productTargets = new Set(parseProductTargets(manifest));
+  for (const name of declared) {
+    if (!productTargets.has(name)) {
+      fail(`binaryTarget not listed in the product: ${name}`);
     }
   }
-  return names;
+  for (const name of productTargets) {
+    if (!declared.has(name)) {
+      fail(`product references unknown target: ${name}`);
+    }
+  }
 };
 
 /** Extracts the target names listed in the `.library(... targets: [...])`. */
@@ -118,7 +175,11 @@ const validatePackage = (pkgDir: string, errors: string[]): boolean => {
 
   // 3. Every binaryTarget path resolves to an xcframework directory with an Info.plist.
   const referenced = new Set<string>();
-  for (const relPath of parseBinaryTargetPaths(manifest)) {
+  for (const target of parseBinaryTargets(manifest)) {
+    const relPath = target.path;
+    if (!relPath) {
+      continue;
+    }
     const abs = path.join(pkgDir, relPath);
     if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
       fail(`binaryTarget path does not exist: ${relPath}`);
@@ -144,7 +205,11 @@ const validatePackage = (pkgDir: string, errors: string[]): boolean => {
   }
 
   // 5. Product targets are closed over declared binaryTargets.
-  const targetNames = new Set(parseBinaryTargetNames(manifest));
+  const targetNames = new Set(
+    parseBinaryTargets(manifest)
+      .map((t) => t.name)
+      .filter((n): n is string => n !== undefined)
+  );
   const productTargets = parseProductTargets(manifest);
   if (productTargets.length === 0) {
     fail("library product declares no targets");
@@ -154,6 +219,180 @@ const validatePackage = (pkgDir: string, errors: string[]): boolean => {
       fail(`product references unknown target: ${t}`);
     }
   }
+
+  return true;
+};
+
+/**
+ * Validates the root manifest in dist/spm/, which SwiftPM resolves over the
+ * network: its binaryTargets must match the archives that will be uploaded as
+ * release assets, and the release tag in every url must be the version the npm
+ * packages were generated with. Returns false when there is nothing to validate.
+ */
+const validateRemoteSpmPackage = (distDir: string, errors: string[]): boolean => {
+  const spmDir = path.join(distDir, REMOTE_SPM_DIR);
+  const manifestPath = path.join(spmDir, "Package.swift");
+
+  if (!fs.existsSync(manifestPath)) {
+    return false;
+  }
+
+  const fail = (msg: string): void => {
+    errors.push(`[${REMOTE_SPM_DIR}] ${msg}`);
+  };
+
+  const manifest = fs.readFileSync(manifestPath, "utf8");
+
+  // 1. The release tag in the urls is the version the npm packages carry.
+  const pkgJsonPath = path.join(
+    distDir,
+    REMOTE_SPM_SOURCE_PACKAGE,
+    "package.json"
+  );
+  let expectedVersion: string | null = null;
+  if (fs.existsSync(pkgJsonPath)) {
+    expectedVersion = JSON.parse(fs.readFileSync(pkgJsonPath, "utf8")).version;
+  } else {
+    fail(
+      `${REMOTE_SPM_SOURCE_PACKAGE}/package.json not found, cannot check the release version`
+    );
+  }
+
+  const targets = parseUrlBinaryTargets(manifest);
+  if (targets.length === 0) {
+    fail("manifest declares no url-based binaryTargets");
+  }
+
+  for (const target of targets) {
+    if (expectedVersion && !target.url.includes(`/download/${expectedVersion}/`)) {
+      fail(
+        `binaryTarget "${target.name}" url does not point at version ${expectedVersion}: ${target.url}`
+      );
+    }
+
+    // 2. Every declared archive exists and hashes to the declared checksum.
+    const archiveName = target.url.split("/").pop() ?? "";
+    const archivePath = path.join(spmDir, archiveName);
+    if (!fs.existsSync(archivePath)) {
+      fail(`binaryTarget "${target.name}" archive is missing: ${archiveName}`);
+      continue;
+    }
+
+    const actual = sha256File(archivePath);
+    if (actual !== target.checksum) {
+      fail(
+        `binaryTarget "${target.name}" checksum mismatch for ${archiveName}: manifest ${target.checksum}, actual ${actual}`
+      );
+    }
+  }
+
+  // 3. The product lists exactly the declared targets.
+  checkProductClosure(manifest, new Set(targets.map((t) => t.name)), fail);
+
+  return true;
+};
+
+/** The Graphite milestone number declared in skia-config.json, e.g. 152 for m152. */
+const readGraphiteMilestone = (fail: (msg: string) => void): string | null => {
+  const configPath = path.join(ROOT_DIR, SKIA_CONFIG_FILE);
+  if (!fs.existsSync(configPath)) {
+    fail(`${SKIA_CONFIG_FILE} not found, cannot check the release tag`);
+    return null;
+  }
+
+  const config: { "skia-graphite"?: { version?: string } } = JSON.parse(
+    fs.readFileSync(configPath, "utf8")
+  );
+  const version = config["skia-graphite"]?.version;
+  const match = version?.match(/^m(\d+)/);
+  if (!match) {
+    fail(
+      `${SKIA_CONFIG_FILE} has no usable "skia-graphite".version: ${version ?? "missing"}`
+    );
+    return null;
+  }
+  return match[1];
+};
+
+/**
+ * Validates the root manifest, which is dist/spm/Package.swift copied into the
+ * repository root and committed by hand at release time. Its urls point at
+ * release assets, so what can drift is the release tag it pins and the
+ * checksums it declares: the tag must belong to the Skia milestone in
+ * skia-config.json, and the checksums must be the ones the archives hash to
+ * whenever dist/spm is still around. Returns false when there is no root
+ * manifest to validate.
+ */
+const validateRootSpmPackage = (distDir: string, errors: string[]): boolean => {
+  const manifestPath = path.join(ROOT_DIR, ROOT_MANIFEST);
+  if (!fs.existsSync(manifestPath)) {
+    console.log(`  Skipped root SwiftPM manifest: no ${ROOT_MANIFEST} at the repository root`);
+    return false;
+  }
+
+  const fail = (msg: string): void => {
+    errors.push(`[${ROOT_MANIFEST}] ${msg}`);
+  };
+
+  const manifest = fs.readFileSync(manifestPath, "utf8");
+  const targets = parseUrlBinaryTargets(manifest);
+  if (targets.length === 0) {
+    fail("manifest declares no url-based binaryTargets");
+    return true;
+  }
+
+  // 1. Every url pins the same release tag, and that tag belongs to the Skia
+  //    milestone in skia-config.json. Only the major version is compared, so a
+  //    patch release of the same milestone is not drift.
+  const tags = new Set<string>();
+  for (const target of targets) {
+    const tag = parseReleaseTag(target.url);
+    if (tag === null) {
+      fail(`binaryTarget "${target.name}" url is not a release asset url: ${target.url}`);
+      continue;
+    }
+    tags.add(tag);
+  }
+  if (tags.size > 1) {
+    fail(`binaryTargets do not share one release tag: ${[...tags].sort().join(", ")}`);
+  }
+
+  const milestone = readGraphiteMilestone(fail);
+  if (milestone !== null) {
+    for (const tag of tags) {
+      if (tag.split(".")[0] !== milestone) {
+        fail(
+          `release tag ${tag} does not match ${SKIA_CONFIG_FILE} skia-graphite m${milestone}: expected ${milestone}.x.y`
+        );
+      }
+    }
+  }
+
+  // 2. Declared checksums match the archives. A plain checkout has no dist/,
+  //    and then the tag check above is all that can be done.
+  const spmDir = path.join(distDir, REMOTE_SPM_DIR);
+  if (fs.existsSync(spmDir)) {
+    for (const target of targets) {
+      const archiveName = target.url.split("/").pop() ?? "";
+      const archivePath = path.join(spmDir, archiveName);
+      if (!fs.existsSync(archivePath)) {
+        fail(
+          `binaryTarget "${target.name}" archive is missing from ${REMOTE_SPM_DIR}/: ${archiveName}`
+        );
+        continue;
+      }
+
+      const actual = sha256File(archivePath);
+      if (actual !== target.checksum) {
+        fail(
+          `binaryTarget "${target.name}" checksum mismatch for ${archiveName}: manifest ${target.checksum}, actual ${actual}`
+        );
+      }
+    }
+  }
+
+  // 3. The product lists exactly the declared targets.
+  checkProductClosure(manifest, new Set(targets.map((t) => t.name)), fail);
 
   return true;
 };
@@ -177,11 +416,24 @@ const main = (): void => {
     .filter((e) => e.isDirectory());
 
   for (const entry of entries) {
+    if (entry.name === REMOTE_SPM_DIR) {
+      continue;
+    }
     const pkgDir = path.join(distDir, entry.name);
     if (validatePackage(pkgDir, errors)) {
       validated++;
       console.log(`  Validated SwiftPM manifest: ${entry.name}`);
     }
+  }
+
+  if (validateRemoteSpmPackage(distDir, errors)) {
+    validated++;
+    console.log(`  Validated remote SwiftPM manifest: ${REMOTE_SPM_DIR}`);
+  }
+
+  if (validateRootSpmPackage(distDir, errors)) {
+    validated++;
+    console.log(`  Validated root SwiftPM manifest: ${ROOT_MANIFEST}`);
   }
 
   console.log("");
