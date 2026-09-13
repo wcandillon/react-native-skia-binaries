@@ -678,6 +678,18 @@ const generatePackage = async (
   return pkgDir;
 };
 
+/**
+ * Writes a `key=value` line to $GITHUB_OUTPUT when running inside GitHub
+ * Actions, so a later workflow step can read this script's own output (e.g.
+ * the release tag for the remote SwiftPM package) instead of re-deriving it.
+ * No-ops outside of CI.
+ */
+const writeGithubOutput = (key: string, value: string): void => {
+  const outputFile = process.env.GITHUB_OUTPUT;
+  if (!outputFile) return;
+  fs.appendFileSync(outputFile, `${key}=${value}\n`);
+};
+
 interface SkiaConfig {
   version: string;
   checksums?: Record<string, string>;
@@ -746,6 +758,7 @@ const generateAllFromConfig = async (
     }
 
     await generateRemoteSpmPackage(outputDir, npmVersion, spmRepo);
+    writeGithubOutput("graphite_npm_version", npmVersion);
     console.log("");
   }
 
