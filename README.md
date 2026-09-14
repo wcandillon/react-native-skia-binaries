@@ -26,10 +26,12 @@ The binaries are downloaded from GitHub releases and bundled directly into npm p
 | `react-native-skia-graphite-apple-macos` | Apple | macOS (arm64 + x64) |
 | `react-native-skia-graphite-headers` | Common | Graphite headers |
 
+The Apple packages declare `"os": ["darwin"]`: their xcframeworks are only consumed by Xcode, so package managers skip them on Linux and Windows once they are listed as optional dependencies.
+
 ## Usage
 
 ```bash
-# Install a specific platform package
+# Install a specific platform package (Apple packages install on macOS only)
 npm install react-native-skia-apple-ios
 ```
 
