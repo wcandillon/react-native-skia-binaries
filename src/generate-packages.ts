@@ -34,7 +34,10 @@ import { fileURLToPath } from "url";
 import {
   copyDir,
   downloadAndExtractAsset,
+  downloadToFile,
   downloadXcframeworks,
+  extractTarGz,
+  extractZip,
   runCommand,
 } from "./release-assets.js";
 
@@ -184,7 +187,8 @@ const ANDROID_REQUIRED_LIBS = new Set([
   "libskunicode_icu.a",
   "libpathops.a",
   "libjsonreader.a",
-  "libdawn_combined.a", // Required for Graphite (Dawn/WebGPU backend)
+  // libdawn_combined.a is intentionally dropped: Graphite packages ship the
+  // shared libwebgpu_dawn.so instead (see addSharedDawn).
 ]);
 
 const cleanupAndroidLibs = (libsDir: string): void => {
@@ -560,6 +564,107 @@ const generateRemoteSpmPackage = async (
   console.log(`  Generated Package.swift (${targets.length} binary targets)`);
 };
 
+// --- Shared Dawn ---
+
+// Graphite links Dawn as a shared artifact, the exact one react-native-webgpu
+// links, so an app installing both packages contains a single Dawn copy.
+// react-native-skia's podspec and build.gradle expect libwebgpu_dawn (an
+// xcframework on Apple, a .so per ABI on Android) next to the Skia libs, plus
+// libs/.dawn-version holding the release tag for the react-native-webgpu
+// version check. The libdawn_combined artifact from the Skia release is dropped.
+const DAWN_REPO = "wcandillon/react-native-webgpu";
+
+interface DawnConfig {
+  releaseTag: string;
+  checksums: { android: string; apple: string };
+}
+
+const loadDawnConfig = (): DawnConfig => {
+  const configPath = path.join(ROOT_DIR, "skia-config.json");
+  const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  const dawn = config.dawn as DawnConfig | undefined;
+  if (!dawn?.releaseTag || !dawn.checksums?.android || !dawn.checksums?.apple) {
+    throw new Error(`${configPath} has no usable "dawn" entry (releaseTag + checksums)`);
+  }
+  return dawn;
+};
+
+const downloadDawnAsset = async (
+  dawn: DawnConfig,
+  assetName: string,
+  expectedChecksum: string,
+  extractDir: string
+): Promise<void> => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "dawn-download-"));
+  try {
+    const archivePath = path.join(tempDir, assetName);
+    const url = `https://github.com/${DAWN_REPO}/releases/download/${dawn.releaseTag}/${assetName}`;
+    console.log(`      Downloading ${assetName}...`);
+    await downloadToFile(url, archivePath);
+    const actual = await sha256File(archivePath);
+    if (actual !== expectedChecksum) {
+      throw new Error(
+        `Checksum mismatch for ${assetName}: expected ${expectedChecksum}, got ${actual}`
+      );
+    }
+    if (assetName.endsWith(".zip")) {
+      await extractZip(archivePath, extractDir);
+    } else {
+      await extractTarGz(archivePath, extractDir);
+    }
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+};
+
+const addSharedDawn = async (pkg: PackageConfig, libsDir: string): Promise<void> => {
+  if (pkg.platform !== "android" && pkg.platform !== "apple") {
+    return;
+  }
+  const dawn = loadDawnConfig();
+  const extractDir = fs.mkdtempSync(path.join(os.tmpdir(), "dawn-extract-"));
+  try {
+    if (pkg.platform === "android" && pkg.androidArchs) {
+      await downloadDawnAsset(
+        dawn,
+        `dawn-android-${dawn.releaseTag}.tar.gz`,
+        dawn.checksums.android,
+        extractDir
+      );
+      for (const { arch } of pkg.androidArchs) {
+        const src = path.join(extractDir, "dawn-android", arch, "libwebgpu_dawn.so");
+        if (!fs.existsSync(src)) {
+          throw new Error(`Missing libwebgpu_dawn.so for ${arch} in ${dawn.releaseTag}`);
+        }
+        fs.rmSync(path.join(libsDir, arch, "libdawn_combined.a"), { force: true });
+        fs.copyFileSync(src, path.join(libsDir, arch, "libwebgpu_dawn.so"));
+      }
+    } else if (pkg.platform === "apple") {
+      await downloadDawnAsset(
+        dawn,
+        `dawn-apple-${dawn.releaseTag}.xcframework.zip`,
+        dawn.checksums.apple,
+        extractDir
+      );
+      const src = path.join(extractDir, "dawn-apple.xcframework");
+      if (!fs.existsSync(src)) {
+        throw new Error(`Missing dawn-apple.xcframework in ${dawn.releaseTag}`);
+      }
+      fs.rmSync(path.join(libsDir, "libdawn_combined.xcframework"), {
+        recursive: true,
+        force: true,
+      });
+      const dest = path.join(libsDir, "libwebgpu_dawn.xcframework");
+      fs.rmSync(dest, { recursive: true, force: true });
+      copyDir(src, dest);
+    }
+  } finally {
+    fs.rmSync(extractDir, { recursive: true, force: true });
+  }
+  fs.writeFileSync(path.join(libsDir, ".dawn-version"), `${dawn.releaseTag}\n`);
+  console.log(`    Added shared Dawn (${dawn.releaseTag})`);
+};
+
 const generateReadme = (
   pkg: PackageConfig,
   skiaVersion: string,
@@ -647,6 +752,10 @@ const generatePackage = async (
     await stripDebugSymbols(libsDir);
     fs.writeFileSync(path.join(libsDir, "graphite.enabled"), "");
     console.log(`    Created graphite.enabled marker file`);
+  }
+
+  if (graphite) {
+    await addSharedDawn(pkg, libsDir);
   }
 
   // Generate Package.swift for Apple packages (SwiftPM consumers). This is a

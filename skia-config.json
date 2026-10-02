@@ -21,5 +21,12 @@
       "apple-ios-xcframeworks": "4aebb45571369d8156abfd5a7df54cf6527ad5f62d81424e388d8dc361e38a04",
       "apple-macos-xcframeworks": "1c1d1479e54b586e28e1cb42d378b702dc6387d187af3eb40cc10b4cd056a16d"
     }
+  },
+  "dawn": {
+    "releaseTag": "dawn-chrome-m154",
+    "checksums": {
+      "android": "6fe8766dc3711e1e41e8b9d919fadd83f0e364945e66c01f49f316f4a3d96b1f",
+      "apple": "896575ffbc99610198a83d061f8c5a2789139b7f16c669fbf3a9f7a7ac9be123"
+    }
   }
 }
