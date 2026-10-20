@@ -1,5 +1,15 @@
 # React Native Skia Binaries
 
+> **Status: archived (October 2026).** This repository is no longer maintained and is kept read-only for reference.
+>
+> It produced the prebuilt Skia binary packages used by React Native Skia v2 (`react-native-skia-android`, `react-native-skia-apple-ios`, `react-native-skia-apple-tvos`, `react-native-skia-apple-macos`), the first `react-native-skia-graphite-*` packages, and a remote Swift package resolving to the release assets of this repository.
+>
+> - The v2 packages stay published on npm and keep working. Nothing is unpublished.
+> - Starting with React Native Skia v3, the binaries (`react-native-skia-graphite-*` and `react-native-webgpu-dawn`) are built and published directly from the [react-native-skia](https://github.com/wcandillon/react-native-skia) repository by its "Build and publish binaries" workflow. New Skia milestones are released there, not here.
+> - The GitHub releases, and the remote Swift package in `Package.swift` that points at them, remain downloadable from this archived repository.
+>
+> This repository would only be revived if a new set of Ganesh binaries for the v2 line were ever needed.
+
 This repository generates and publishes prebuilt Skia binary packages for [React Native Skia](https://github.com/Shopify/react-native-skia).
 
 ## Overview
